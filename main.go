@@ -8,11 +8,13 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"log"
 	"math/rand"
 	"net/http"
+	"os"
 
 	spotifyauth "github.com/zmb3/spotify/v2/auth"
 
@@ -26,7 +28,9 @@ const redirectURI = "http://localhost:8080/callback"
 
 var (
 	auth = spotifyauth.New(spotifyauth.WithRedirectURL(redirectURI),
-		spotifyauth.WithScopes(spotifyauth.ScopeUserReadPrivate, spotifyauth.ScopeUserLibraryRead))
+		spotifyauth.WithScopes(spotifyauth.ScopeUserReadPrivate, spotifyauth.ScopeUserLibraryRead,
+			spotifyauth.ScopeUserLibraryModify, spotifyauth.ScopePlaylistModifyPublic,
+			spotifyauth.ScopePlaylistModifyPrivate, spotifyauth.ScopePlaylistModifyPublic))
 	ch    = make(chan *spotify.Client)
 	state = "shuffler"
 )
@@ -68,71 +72,163 @@ func main() {
 		fmt.Println(i+1, pl.Name)
 	}
 
+	var reinstate bool = false
+
+	if _, err := os.Stat("playlist.txt"); err == nil {
+		fmt.Printf("%d Reinstate playlist.txt\n", len(playlists.Playlists)+1)
+		reinstate = true
+	}
+
 	var toShuffle uint
 	fmt.Println("\nEnter playlist number to shuffle: ")
 	fmt.Scan(&toShuffle)
 
-	for toShuffle > uint(playlists.Total) {
+	for (!reinstate && toShuffle > uint(playlists.Total)) || (reinstate && toShuffle > uint(playlists.Total)+1) {
 		fmt.Println("Error invalid playlist number")
 		fmt.Println("\nEnter playlist number to shuffle: ")
 		fmt.Scan(&toShuffle)
 	}
 
+	//TODO make funcs take pointer to slice and return void
 	var allTracks []spotify.ID
 	var playlistID spotify.ID
 
 	if toShuffle == 0 {
-		fmt.Printf("You have chosen playlist number 1 with title: Saved Tracks\n")
+		fmt.Printf("You have chosen playlist number 0 with title: Saved Tracks\n")
+
 		allTracks = getSavedTracks(client)
-		shuffle(allTracks)
-		//TODO
+
+		storePlaylist(&allTracks, &playlistID, true)
+
+		shuffle(&allTracks)
+
+		swapLikedSongs(client, &allTracks)
+
+	} else if toShuffle == uint(playlists.Total+1) {
+		reinstatePlaylist()
 
 	} else {
 		fmt.Printf("You have chosen playlist number %d with title: %s\n", toShuffle, playlists.Playlists[toShuffle-1].Name)
-		//fmt.Println(playlists.Playlists[toShuffle-1].Tracks)
+
 		playlistID = playlists.Playlists[toShuffle-1].ID
+		allTracks = getPlaylistTracks(client, &playlistID)
 
-		allTracks = getPlaylistTracks(client, playlistID)
-		shuffle(allTracks)
+		storePlaylist(&allTracks, &playlistID, false)
 
-		swapPlaylist(client, allTracks, playlistID)
+		shuffle(&allTracks)
+
+		swapPlaylist(client, &allTracks, &playlistID)
 	}
 
 }
 
-func swapLikedSongs(client *spotify.Client, alltracks []spotify.ID, playlistID spotify.ID) {
-	client.AddTracksToLibrary()
-	client.RemoveTracksFromLibrary()
+func reinstatePlaylist(client *spotify.Client) {
+	f, err := os.OpenFile("playlist.txt", os.O_RDONLY, 0666)
+	if err != nil {
+		panic(err)
+	}
+	defer f.Close()
+
+	i := 0
+	var playlistID spotify.ID = spotify.ID(0)
+	var allTracks []spotify.ID
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		var line string = scanner.Text()
+		if i == 0 {
+			if line != "Saved Tracks" {
+				playlistID = spotify.ID(line)
+			}
+		} else {
+			allTracks = append(allTracks, spotify.ID(line))
+		}
+		i++
+
+		fmt.Println(scanner.Text())
+	}
+
+	if err := scanner.Err(); err != nil {
+		log.Fatal(err)
+	}
+
+	if playlistID != spotify.ID(0) {
+		//TODO check if playlistID is a valid user playlist, create new playlist if not
+		swapPlaylist(client, &allTracks, &playlistID)
+	} else {
+		swapLikedSongs(client, &allTracks)
+	}
 }
 
-func swapPlaylist(client *spotify.Client, alltracks []spotify.ID, playlistID spotify.ID) {
+func storePlaylist(allTracks *[]spotify.ID, playlistID *spotify.ID, savedTracks bool) {
+	f, err := os.Create("playlist.txt")
 
-	partialTracks := alltracks[0:100]
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer f.Close()
 
-	client.ReplacePlaylistTracks(context.Background(), playlistID, partialTracks...)
+	if savedTracks {
+		_, err := f.WriteString("Saved Tracks\n")
+		if err != nil {
+			log.Fatal(err)
+		}
+	} else {
+		_, err := f.WriteString((*playlistID).String() + "\n")
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
 
-	i := len(partialTracks)
-	for i < len(alltracks) {
-		partialTracks = alltracks[i-1 : i+100]
-		_, err := client.AddTracksToPlaylist(context.Background(), playlistID, partialTracks...)
+	for _, id := range *allTracks {
+		_, err := f.WriteString(id.String() + "\n")
 		if err != nil {
 			log.Fatal(err)
 		}
 	}
 }
 
-func shuffle(alltracks []spotify.ID) []spotify.ID {
-	for range 10 {
-		for i := range alltracks {
-			swapPos := rand.Intn(len(alltracks))
-			alltracks[i], alltracks[swapPos] = alltracks[swapPos], alltracks[i]
-		}
+func swapLikedSongs(client *spotify.Client, alltracks *[]spotify.ID) {
+	err := client.RemoveTracksFromLibrary(context.Background(), *alltracks...)
+	if err != nil {
+		log.Fatal(err)
 	}
-	return alltracks
+	err = client.AddTracksToLibrary(context.Background(), *alltracks...)
+	if err != nil {
+		log.Fatal(err)
+	}
 }
 
-func getPlaylistTracks(client *spotify.Client, playlistID spotify.ID) []spotify.ID {
-	playlist, err := client.GetPlaylist(context.Background(), playlistID)
+func swapPlaylist(client *spotify.Client, alltracks *[]spotify.ID, playlistID *spotify.ID) {
+
+	partialTracks := (*alltracks)[0:min(len(*alltracks), 100)]
+
+	err := client.ReplacePlaylistTracks(context.Background(), *playlistID, partialTracks...)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	i := len(partialTracks)
+	for i < len(*alltracks) {
+		partialTracks = (*alltracks)[i-1 : min(len(*alltracks)-i, i+100)]
+		_, err := client.AddTracksToPlaylist(context.Background(), *playlistID, partialTracks...)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+}
+
+func shuffle(alltracks *[]spotify.ID) {
+	for range 10 {
+		for i := range *alltracks {
+			swapPos := rand.Intn(len(*alltracks))
+			(*alltracks)[i], (*alltracks)[swapPos] = (*alltracks)[swapPos], (*alltracks)[i]
+		}
+	}
+}
+
+func getPlaylistTracks(client *spotify.Client, playlistID *spotify.ID) []spotify.ID {
+	playlist, err := client.GetPlaylist(context.Background(), *playlistID)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -142,6 +238,7 @@ func getPlaylistTracks(client *spotify.Client, playlistID spotify.ID) []spotify.
 		//fmt.Println(track.Track.ID)
 		allTracks = append(allTracks, track.Track.ID)
 	}
+	fmt.Printf("saved all %d tracks to playlist.txt\n", len(allTracks))
 
 	return allTracks
 }
@@ -177,6 +274,7 @@ func getSavedTracks(client *spotify.Client) []spotify.ID {
 		}
 		offset += limit
 	}
+	fmt.Printf("saved all %d tracks to playlist.txt\n", len(allTracks))
 
 	return allTracks
 }
