@@ -105,7 +105,7 @@ func main() {
 		swapLikedSongs(client, &allTracks)
 
 	} else if toShuffle == uint(playlists.Total+1) {
-		reinstatePlaylist()
+		reinstatePlaylist(client)
 
 	} else {
 		fmt.Printf("You have chosen playlist number %d with title: %s\n", toShuffle, playlists.Playlists[toShuffle-1].Name)
@@ -119,6 +119,7 @@ func main() {
 
 		swapPlaylist(client, &allTracks, &playlistID)
 	}
+	fmt.Println("process complete")
 
 }
 
@@ -156,7 +157,13 @@ func reinstatePlaylist(client *spotify.Client) {
 		//TODO check if playlistID is a valid user playlist, create new playlist if not
 		swapPlaylist(client, &allTracks, &playlistID)
 	} else {
-		swapLikedSongs(client, &allTracks)
+		i := 0
+		for i < len(allTracks) {
+			part := allTracks[i:min(i+50, len(allTracks))]
+			client.AddTracksToLibrary(context.Background(), part...)
+			i += 50
+		}
+
 	}
 }
 
@@ -189,13 +196,26 @@ func storePlaylist(allTracks *[]spotify.ID, playlistID *spotify.ID, savedTracks 
 }
 
 func swapLikedSongs(client *spotify.Client, alltracks *[]spotify.ID) {
-	err := client.RemoveTracksFromLibrary(context.Background(), *alltracks...)
-	if err != nil {
-		log.Fatal(err)
+	i := 0
+	for i < len(*alltracks) {
+		part := (*alltracks)[i:min(i+50, len(*alltracks))]
+		err := client.RemoveTracksFromLibrary(context.Background(), part...)
+		if err != nil {
+			log.Fatal(err)
+			reinstatePlaylist(client)
+		}
+		i += 50
 	}
-	err = client.AddTracksToLibrary(context.Background(), *alltracks...)
-	if err != nil {
-		log.Fatal(err)
+
+	i = 0
+	for i < len(*alltracks) {
+		part := (*alltracks)[i:min(i+50, len(*alltracks))]
+		err := client.AddTracksToLibrary(context.Background(), part...)
+		if err != nil {
+			log.Fatal(err)
+			reinstatePlaylist(client)
+		}
+		i += 50
 	}
 }
 
